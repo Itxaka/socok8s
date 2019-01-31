@@ -1,0 +1,18 @@
+language: python
+cache: pip
+dist: xenial
+
+matrix:
+  include:
+    - name: "shell syntax"
+      script: find . -path "./submodules" -prune -o -type f -name "*.sh" -print | xargs -n1 shellcheck -x --format=gcc
+    - name: "playbook syntax"
+      script: find . -name 'play.yml' | xargs -n1  ansible-playbook --syntax-check -i .test_inventory
+    - name: "yaml syntax"
+      script: for i in `find . -path "./submodules" -prune -o -type f -name "*.yml" -print`; do echo "Checking YAML syntax for $i"; python -c 'import yaml, sys; yaml.safe_load(sys.stdin)' < $i; done
+  allow_failures:
+    - name: "shell syntax"
+
+install:
+  - pip install ansible
+  - pip install PyYAML

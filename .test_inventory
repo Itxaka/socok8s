@@ -1,0 +1,6 @@
+[ses_nodes]
+127.0.0.1
+[osh-deployer]
+127.0.0.1
+[osh-deploy-cp]
+127.0.0.1
