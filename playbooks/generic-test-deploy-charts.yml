@@ -1,0 +1,18 @@
+---
+- hosts: localhost
+  gather_facts: yes
+  tasks:
+    - set_fact:
+        socok8s_ext_vip: 192.168.150.150
+        developer_mode: false
+    - import_role:
+        name: dev-patcher
+    - import_role:
+        name: common-deployer
+        tasks_from: helm-install
+    - import_role:
+        name: common-deployer
+        tasks_from: helm-run
+    - import_role:
+        name: deploy-osh
+        tasks_from: test

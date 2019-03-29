@@ -2,14 +2,46 @@ language: python
 cache: pip
 dist: xenial
 
+env:
+  global:
+    - CHANGE_MINIKUBE_NONE_USER=true
+    - MINIKUBE_WANTUPDATENOTIFICATION=false
+    - MINIKUBE_WANTREPORTERRORPROMPT=false
+    - MINIKUBE_WANTREPORTERROR=false
+    - MINIKUBE_WANTNONEDRIVERWARNING=false
+    - KUBECONFIG=/home/travis/.kube/config
+    - MINIKUBE_HOME=/home/travis
+    - ANSIBLE_STDOUT_CALLBACK=yaml
+
 matrix:
   include:
     - name: "shell syntax"
       script: find . -path "./submodules" -prune -o -type f -name "*.sh" -print | xargs -n1 shellcheck -x --format=gcc
     - name: "playbook syntax"
+      install: pip install ansible-lint
       script: ansible-lint playbooks/*.yml
+    - name: "chart deployment"
+      before_script:
+        # Download kubectl
+        - curl -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/v1.7.0/bin/linux/amd64/kubectl && chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+        # Download minikube
+        - curl -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64 && chmod +x minikube && sudo mv minikube /usr/local/bin/
+        # Create needed paths
+        - mkdir -p ${HOME}/.kube ${HOME}/.minikube
+        - touch ${HOME}/.kube/config
+        # start minikube
+        - sudo minikube start --vm-driver=none --kubernetes-version=v1.12.2
+        - "sudo chown -R travis: ${HOME}/.minikube/"
+        - kubectl create clusterrolebinding add-on-cluster-admin --clusterrole cluster-admin --serviceaccount=kube-system:default
+        - kubectl -n kube-system create sa tiller
+        - kubectl create clusterrolebinding tiller --clusterrole cluster-admin --serviceaccount=kube-system:tiller
+        - kubectl cluster-info
+      install:
+        - sudo apt-get update
+        - sudo apt-get install socat
+        - pip3 install ansible ara
+        - python3 -m ara.setup.ansible | tee ansible.cfg
+      script:
+        - ansible-playbook -e ansible_python_interpreter=/usr/bin/python3 playbooks/generic-test-deploy-charts.yml -vv --become
   allow_failures:
     - name: "shell syntax"
-
-install:
-  - pip install ansible-lint

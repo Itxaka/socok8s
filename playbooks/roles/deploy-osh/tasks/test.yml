@@ -1,0 +1,328 @@
+# tasks file for deploy-osh
+- name: Load variables
+  include_vars: "{{ item }}"
+  loop:
+    - "{{ playbook_dir }}/../vars/common-vars.yml"
+    - "{{ playbook_dir }}/../vars/manifest.yml"
+  tags:
+    - always
+
+- name: Build infra charts
+  make:
+    chdir: /opt/openstack-helm-infra
+    target: all
+  tags:
+    - install
+
+- name: Build openstack-helm charts
+  make:
+    chdir: /opt/openstack-helm
+    target: all
+
+- name: Updated wait for pods logic to account for stuck k8s jobs
+  copy:
+    src: wait-for-pods.sh
+    dest: /opt/openstack-helm/tools/deployment/common/wait-for-pods.sh
+    mode: '0755'
+  tags:
+    - horizon
+    - run
+
+- name: Apply base configuration in K8s for deployments on top of CaaSP/SES
+  include_tasks: apply_on_k8s.yml
+  loop:
+    - action: create openstack namespace
+      template_src_file: k8s-openstack-namespace.yml.j2
+      templated_location: /tmp/socok8s-openstack-namespace.yml
+    - action: create privileged ClusterRoleBinding for ServiceAccounts
+      template_src_file: k8s-privileged-cluster-role-binding.yml.j2
+      templated_location: /tmp/socok8s-privileged-cluster-role-binding.yml
+  tags:
+    - run
+
+- name: apt-get update
+  apt:
+    update_cache: yes
+
+- name: Install openstack client
+  package:
+    name: python-openstackclient
+    state: present
+  register: _pkginstall
+  until: _pkginstall is success
+  retries: 5
+  delay: 2
+  tags:
+    - run
+
+- name: Create .config/openstack directory
+  file:
+    path: /root/.config/openstack
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  tags:
+    - run
+
+- name: Save default clouds.yaml file
+  template:
+    src: clouds.yaml.j2
+    dest: /root/.config/openstack/clouds.yaml
+    owner: root
+    mode: '0640'
+
+- name: Setup Basic ingress and namespace
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/020-ingress.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_INGRESS_openstack: >
+        --values=/tmp/socok8s-susedefaults-ingress-namespace.yaml
+        --values=/tmp/socok8s-useroverrides-ingress-namespace.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_INGRESS_openstack') | default('', True) }}
+      OSH_EXTRA_HELM_ARGS_INGRESS_ceph: >
+        --values=/tmp/socok8s-susedefaults-ingress-namespace.yaml
+        --values=/tmp/socok8s-useroverrides-ingress-namespace.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_INGRESS_ceph') | default('', True) }}
+      OSH_EXTRA_HELM_ARGS_INGRESS_KUBE_SYSTEM: >
+        --values=/tmp/socok8s-susedefaults-ingress-kube-system.yaml
+        --values=/tmp/socok8s-useroverrides-ingress-kube-system.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_INGRESS_KUBE_SYSTEM') | default('', True) }}
+    _component_overrides:
+      - suse_file: ingress-namespace.yaml
+        user_overrides: "{{ suse_osh_deploy_ingress_namespace_yaml_overrides }}"
+      - suse_file: ingress-kube-system.yaml
+        user_overrides: "{{ suse_osh_deploy_ingress_kube_system_yaml_overrides }}"
+  tags:
+    - ingress
+    - run
+
+- name: Deploy mariadb
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/050-mariadb.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_MARIADB: >
+        --values=/tmp/socok8s-susedefaults-mariadb.yaml
+        --values=/tmp/socok8s-useroverrides-mariadb.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_MARIADB') | default('', True) }}
+    _component_overrides:
+      - suse_file: mariadb.yaml
+        user_overrides: "{{ suse_osh_deploy_mariadb_yaml_overrides }}"
+  tags:
+    - mariadb
+    - run
+
+- name: Deploy rabbitmq
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/060-rabbitmq.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_RABBITMQ: >
+        --values=/tmp/socok8s-susedefaults-rabbitmq.yaml
+        --values=/tmp/socok8s-useroverrides-rabbitmq.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_RABBITMQ') | default('', True) }}
+    _component_overrides:
+      - suse_file: rabbitmq.yaml
+        user_overrides: "{{ suse_osh_deploy_rabbitmq_yaml_overrides }}"
+  tags:
+    - rabbitmq
+    - run
+
+- name: Deploy memcached
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/070-memcached.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_MEMCACHED: >
+        --values=/tmp/socok8s-susedefaults-memcached.yaml
+        --values=/tmp/socok8s-useroverrides-memcached.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_MEMCACHED') | default('', True) }}
+    _component_overrides:
+      - suse_file: memcached.yaml
+        user_overrides: "{{ suse_osh_deploy_memcached_yaml_overrides }}"
+  tags:
+    - memcached
+    - run
+
+# Keystone should be kept separate as its one failing.
+- name: Deploy keystone, ignore errors due to SCRD-4677. #https://jira.suse.de/browse/SCRD-4677.
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/080-keystone.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_KEYSTONE: >
+        --values=/tmp/socok8s-susedefaults-keystone.yaml
+        --values=/tmp/socok8s-useroverrides-keystone.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_KEYSTONE') | default('', True) }}
+    _component_overrides:
+      - suse_file: keystone.yaml
+        user_overrides: "{{ suse_osh_deploy_keystone_yaml_overrides }}"
+  tags:
+    - keystone
+    - run
+
+- name: Use a different horizon script as missing a multinode version without node port requirement
+  copy:
+    src: 085-horizon.sh
+    dest: /opt/openstack-helm/tools/deployment/multinode/085-horizon.sh
+    mode: '0755'
+  tags:
+    - horizon
+    - run
+
+- name: Deploy horizon
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/085-horizon.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_HORIZON: >
+        --values=/tmp/socok8s-susedefaults-horizon.yaml
+        --values=/tmp/socok8s-useroverrides-horizon.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_HORIZON') | default('', True) }}
+    _component_overrides:
+      - suse_file: horizon.yaml
+        user_overrides: "{{ suse_osh_deploy_horizon_yaml_overrides }}"
+  tags:
+    - horizon
+    - run
+
+  #TODO(evrardjp): Remove the next two tasks by an appropriate include in tasks/main
+  #when https://review.openstack.org/#/c/586992 is merged
+- name: Copy ceph provisioner
+  template:
+    src: 046-ceph-deploy-with-existing-ceph.sh.j2
+    dest: "/opt/openstack-helm/tools/deployment/developer/ceph/046-ceph-deploy-with-existing-ceph.sh"
+    mode: "0755"
+  tags:
+    - run
+
+# TODO(evrardjp): Check stdout to ensure idempotency
+# Skip ansible linting until idempotency checks are added (changed_when/failed_when)
+- name: Execute ceph provisioner
+  command: ../openstack-helm/tools/deployment/developer/ceph/046-ceph-deploy-with-existing-ceph.sh
+  args:
+    executable: /bin/bash
+    chdir: /opt/openstack-helm-infra
+  tags:
+    - run
+    - skip_ansible_lint
+
+- name: Deploy glance
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/100-glance.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_GLANCE: >
+        --values=/tmp/socok8s-susedefaults-glance.yaml
+        --values=/tmp/socok8s-useroverrides-glance.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_GLANCE') | default('', True) }}
+    _component_overrides:
+      - suse_file: glance.yaml
+        user_overrides: "{{ suse_osh_deploy_glance_yaml_overrides }}"
+  tags:
+    - glance
+    - run
+
+# This is an arbitrary UUID value that's passed to the libvirt daemonset setup job for configuring a libvirt secret XML file
+- name: Create Libvirt ceph cinder secret uuid
+  shell: "uuidgen > {{ socok8s_libvirtuuid }}"
+  args:
+    creates: "{{ socok8s_libvirtuuid }}"
+  delegate_to: localhost
+
+- name: Get libvirt secret
+  set_fact:
+    libvirt_ceph_cinder_secret_uuid: "{{ lookup('file', socok8s_libvirtuuid) }}"
+  run_once: True
+
+- name: Deploy cinder
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/110-cinder.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_CINDER: >
+        --values=/tmp/socok8s-susedefaults-cinder.yaml
+        --values=/tmp/socok8s-useroverrides-cinder.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_CINDER') | default('', True) }}
+    _component_overrides:
+      - suse_file: cinder.yaml
+        user_overrides: "{{ suse_osh_deploy_cinder_yaml_overrides }}"
+  tags:
+    - cinder
+    - run
+
+- name: Deploy OVS
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/120-openvswitch.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_OPENVSWITCH: >
+        --values=/tmp/socok8s-susedefaults-ovs.yaml
+        --values=/tmp/socok8s-useroverrides-ovs.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_OPENVSWITCH') | default('', True) }}
+    _component_overrides:
+      - suse_file: ovs.yaml
+        user_overrides: "{{ suse_osh_deploy_ovs_yaml_overrides }}"
+  tags:
+    - ovs
+    - run
+
+- name: Deploy libvirt
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/130-libvirt.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_LIBVIRT: >
+        --values=/tmp/socok8s-susedefaults-libvirt.yaml
+        --values=/tmp/socok8s-useroverrides-libvirt.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_LIBVIRT') | default('', True) }}
+    _component_overrides:
+      - suse_file: libvirt.yaml
+        user_overrides: "{{ suse_osh_deploy_libvirt_yaml_overrides }}"
+  tags:
+    - libvirt
+    - run
+
+# TODO(evrardjp): Check if need to have our own dummy overrides
+# In that case, try to split the shell script upstream in two scripts.
+# Compute kit deploys nova and neutron but only nova needs overrides
+- name: Deploy compute kit
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/140-compute-kit.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_NEUTRON: >
+        --values=/tmp/socok8s-susedefaults-neutron.yaml
+        --values=/tmp/socok8s-useroverrides-neutron.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_NEUTRON') | default('', True) }}
+      OSH_EXTRA_HELM_ARGS_NOVA: >
+        --values=/tmp/socok8s-susedefaults-nova.yaml
+        --values=/tmp/socok8s-useroverrides-nova.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_NOVA') | default('', True) }}
+    _component_overrides:
+      - suse_file: nova.yaml
+        user_overrides: "{{ suse_osh_deploy_nova_yaml_overrides }}"
+      - suse_file: neutron.yaml
+        user_overrides: "{{ suse_osh_deploy_neutron_yaml_overrides }}"
+  tags:
+    - nova
+    - neutron
+    - run
+
+- name: Deploy Heat
+  import_tasks: component-install.yml
+  vars:
+    _component_runcommand: "./tools/deployment/multinode/150-heat.sh"
+    _component_run_env:
+      OSH_EXTRA_HELM_ARGS_HEAT: >
+        --values=/tmp/socok8s-susedefaults-heat.yaml
+        --values=/tmp/socok8s-useroverrides-heat.yaml
+        {{ lookup('env', 'OSH_EXTRA_HELM_ARGS_HEAT') | default('', True) }}
+    _component_overrides:
+      - suse_file: heat.yaml
+        user_overrides: "{{ suse_osh_deploy_heat_yaml_overrides }}"
+  tags:
+    - heat
+    - run

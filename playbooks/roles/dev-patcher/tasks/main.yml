@@ -12,6 +12,7 @@
     name: "{{ dev_patcher_packages }}"
     state: present
   register: install_packages
+  become: yes
   until: install_packages  is success
   retries: 5
   delay: 2
