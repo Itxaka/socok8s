@@ -111,6 +111,7 @@
     target: all
   tags:
     - install
+  when: false
 
 - name: Build openstack-helm charts
   make:
@@ -118,6 +119,7 @@
     target: all
   tags:
     - run
+  when: false
 
 - name: Apply base configuration in K8s for deployments on top of CaaSP/SES
   include_tasks: apply_on_k8s.yml
