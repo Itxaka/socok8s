@@ -51,6 +51,27 @@
 - hosts: caasp-workers
   vars_files:
     - "{{ playbook_dir }}/../vars/common-vars.yml"
+  pre_tasks:
+    # ipaddr, name and id has to match the same values as in:
+    # site/soc/networks/common-addresses.yaml
+    # site/soc/networks/physical/networks.yaml
+    - name: Set ip address for this node
+      set_fact:
+        tagged_interface_ip: "10.23.24.{{ (inventory_hostname.split('-')[-1] | int) + 1 }}"
+    - name: Create vlan tagged interface for overlay network
+      become: yes
+      command: ip link add link eth0 name eth0.24 type vlan id 24
+      when: not "eth0.24" in ansible_interfaces
+    - name: Enable vlan tagged interface for overlay network
+      become: yes
+      command: ip link set dev eth0.24 up
+      when:
+        - not ansible_facts["eth0.24"]["active"] | default(false, true)
+    - name: Add ip to vlan tagged interface for overlay network
+      become: yes
+      command: "ip addr add {{ tagged_interface_ip }}/24 dev eth0.24"
+      when:
+        - ansible_facts["eth0.24"]["ipv4"]["address"] | default("", true) != tagged_interface_ip
   roles:
     - role: dstat
       when: lookup('env', 'SOCOK8S_DEPLOY_DSTAT') | default(False, True)
